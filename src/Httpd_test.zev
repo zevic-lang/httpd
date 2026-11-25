@@ -1,0 +1,123 @@
+module Httpd
+
+import Zevic.Async
+import Zevic.Net
+import Zevic.Test
+import Zevic.Text
+
+// ---- a server on this machine and a client that speaks raw HTTP ----
+
+fn handle(req: Request) -> Response {
+    let path: String = req.Path()
+    if (path == "/hello") {
+        return Response.Text(200, "hello ${req.Query()}")
+    }
+    if (path == "/echo") {
+        mut r: Response = Response.Text(201, "${req.Method} ${req.Body}")
+        r.SetHeader("X-Seen", req.Header("x-token").UnwrapOr("none"))
+        return r
+    }
+    Response.Text(404, "no ${path}")
+}
+
+fn start() -> (Server, Async.Task<Result<Unit, Error>>) {
+    let server: Server = Listen("127.0.0.1", 0).Unwrap()
+    let task: Async.Task<Result<Unit, Error>> = async {
+        server.Serve((req: Request) => handle(req))
+    }
+    (server, task)
+}
+
+// Sends `raw` and returns everything the server answers.
+fn exchange(port: I64, raw: String) -> String {
+    mut c: Net.TcpStream = Net.Connect("127.0.0.1", port).Unwrap()
+    c.SetTimeout(10000)
+    c.WriteString(raw).Unwrap()
+    mut out: String = ""
+    loop {
+        let part: String = c.ReadString(65536).Unwrap()
+        if (part.IsEmpty()) {
+            break
+        }
+        out = out + part
+    }
+    c.Close()
+    out
+}
+
+test "a GET gets the status line, the headers and the body" {
+    let (server, task): (Server, Async.Task<Result<Unit, Error>>) = start()
+    let r: String = exchange(server.Port(), "GET /hello?name=zevic HTTP/1.1\r\nHost: x\r\n\r\n")
+    Test.True(Text.StartsWith(r, "HTTP/1.1 200 OK\r\n"))
+    Test.True(Text.Contains(r, "Content-Type: text/plain; charset=utf-8\r\n"))
+    Test.True(Text.Contains(r, "Content-Length: 16\r\n"))
+    Test.True(Text.Contains(r, "Connection: close\r\n"))
+    Test.True(Text.EndsWith(r, "\r\n\r\nhello name=zevic"))
+    server.Close()
+    Test.True(await task == Ok(()))
+}
+
+test "a POST with Content-Length reaches the handler with its body and headers (names in any case)" {
+    let (server, task): (Server, Async.Task<Result<Unit, Error>>) = start()
+    let r: String = exchange(server.Port(), "POST /echo HTTP/1.1\r\nhost: x\r\nX-TOKEN: abc\r\ncontent-length: 9\r\n\r\nsome data")
+    Test.True(Text.StartsWith(r, "HTTP/1.1 201 Created\r\n"))
+    Test.True(Text.Contains(r, "X-Seen: abc\r\n"))
+    Test.True(Text.EndsWith(r, "\r\n\r\nPOST some data"))
+    server.Close()
+    let _t: Result<Unit, Error> = await task
+}
+
+test "a chunked body is put together" {
+    let (server, task): (Server, Async.Task<Result<Unit, Error>>) = start()
+    let r: String = exchange(server.Port(), "PUT /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5;ext=1\r\npedia\r\n0\r\nTrailer: x\r\n\r\n")
+    Test.True(Text.EndsWith(r, "\r\n\r\nPUT Wikipedia"))
+    server.Close()
+    let _t: Result<Unit, Error> = await task
+}
+
+test "an unknown path is the answer of the handler" {
+    let (server, task): (Server, Async.Task<Result<Unit, Error>>) = start()
+    let r: String = exchange(server.Port(), "GET /missing HTTP/1.1\r\nHost: x\r\n\r\n")
+    Test.True(Text.StartsWith(r, "HTTP/1.1 404 Not Found\r\n"))
+    Test.True(Text.EndsWith(r, "no /missing"))
+    server.Close()
+    let _t: Result<Unit, Error> = await task
+}
+
+test "a request that is not HTTP is 400, a body that is too long is 413" {
+    let (server, task): (Server, Async.Task<Result<Unit, Error>>) = start()
+    let r1: String = exchange(server.Port(), "hello there\r\n\r\n")
+    Test.True(Text.StartsWith(r1, "HTTP/1.1 400 Bad Request\r\n"))
+    let r2: String = exchange(server.Port(), "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 99999999999\r\n\r\n")
+    Test.True(Text.StartsWith(r2, "HTTP/1.1 413 Payload Too Large\r\n"))
+    let r3: String = exchange(server.Port(), "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\n\r\n")
+    Test.True(Text.StartsWith(r3, "HTTP/1.1 400 Bad Request\r\n"))
+    server.Close()
+    let _t: Result<Unit, Error> = await task
+}
+
+test "many requests one after the other, and Close ends Serve" {
+    let (server, task): (Server, Async.Task<Result<Unit, Error>>) = start()
+    for (i in 0..20) {
+        let r: String = exchange(server.Port(), "GET /hello?n=${i} HTTP/1.1\r\nHost: x\r\n\r\n")
+        Test.True(Text.EndsWith(r, "hello n=${i}"))
+    }
+    server.Close()
+    match (await task) {
+        Ok(_) => {},
+        Err(e) => Test.Fail("Serve ended with an error: ${e.Message()}"),
+    }
+}
+
+test "a request and a response work as values" {
+    mut req: Request = Request.New("GET", "/a/b?x=1&y=2")
+    req.SetHeader("Accept", "text/html")
+    req.SetHeader("accept", "text/plain")
+    Test.Equal(req.Path(), "/a/b")
+    Test.Equal(req.Query(), "x=1&y=2")
+    Test.Equal(req.Header("ACCEPT").UnwrapOr("?"), "text/plain")
+    Test.Equal(req.Headers.Len(), 1)
+    let r: Response = Response.Text(204, "")
+    Test.True(r.IsOk())
+    Test.True(!Response.Text(500, "x").IsOk())
+}
