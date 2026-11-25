@@ -1,0 +1,5 @@
+[package]
+name = "Httpd"
+version = "0.6.0"
+kind = "lib"
+zevic = ">=0.6"
