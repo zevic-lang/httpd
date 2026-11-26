@@ -2,4 +2,4 @@
 name = "Httpd"
 version = "0.6.0"
 kind = "lib"
-zevic = ">=0.6"
+zevic = ">=0.5"

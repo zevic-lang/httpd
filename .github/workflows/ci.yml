@@ -18,7 +18,7 @@ permissions:
 env:
   # the zevic that builds and tests the package: it needs Net.TcpListener.Shutdown, which is in Zevic 0.6.0
   # (until that is released this is the commit that has it; then use the tag v0.6.0)
-  ZEVIC_REF: 5ce581c487ba2b9adcf3f5c6861f19398a1fdce2
+  ZEVIC_REF: 7c8b2fe27f3d0f95059b7a99684f58796b5a4153
 
 jobs:
   test:
